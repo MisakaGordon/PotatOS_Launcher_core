@@ -1,0 +1,17 @@
+# Build artifacts
+potato-launcher
+*.o
+*.obj
+
+# CMake
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# Editor
+.vscode/
+.idea/
+
+# HMCL reference source (GPL-3.0, not part of this project)
+hmcl_basement/
