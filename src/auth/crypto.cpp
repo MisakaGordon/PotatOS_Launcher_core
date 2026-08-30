@@ -4,7 +4,7 @@
  */
 #include "crypto.h"
 
-#include <cstdio>
+#include <random>
 #include <cstring>
 #include <vector>
 
@@ -370,20 +370,11 @@ std::string offline_uuid(const std::string& username) {
 
 std::string random_uuid(bool compact) {
     uint8_t bytes[16];
-    FILE* f = fopen("/dev/urandom", "rb");
-    if (f) {
-        size_t got = fread(bytes, 1, 16, f);
-        fclose(f);
-        if (got != 16) {
-            // deterministic fallback (should not happen)
-            static uint64_t counter = 0;
-            std::memcpy(bytes, &counter, sizeof(counter));
-            std::memcpy(bytes + 8, &counter, sizeof(counter));
-            ++counter;
-        }
-    } else {
-        std::memset(bytes, 0, 16);
-    }
+    // std::random_device is a cross-platform source of entropy; on Linux it
+    // reads /dev/urandom, on Windows the RNG.
+    std::random_device rd;
+    for (auto& b : bytes)
+        b = static_cast<uint8_t>(rd());
     bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0f) | 0x40); // version 4
     bytes[8] = static_cast<uint8_t>((bytes[8] & 0x3f) | 0x80); // IETF variant
     std::string hex = bytes_to_hex(bytes, 16);

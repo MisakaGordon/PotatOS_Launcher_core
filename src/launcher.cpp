@@ -105,7 +105,8 @@ int DefaultLauncher::java_major_version() const {
     if (java_major_version_cache_ >= 0)
         return java_major_version_cache_;
     int v = -1;
-    auto out = run_for_output({options_.java_path, "-version"});
+    // `java -version` writes to stderr; capture both streams.
+    auto out = run_for_output_merged({options_.java_path, "-version"});
     if (out)
         v = parse_java_major_version(*out);
     if (v < 0)

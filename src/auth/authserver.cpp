@@ -32,14 +32,30 @@ namespace pl {
 // ---------------------------------------------------------------------------
 namespace {
 
-bool run_openssl(const std::vector<std::string>& args, std::string* out) {
-    return run_for_output(args).has_value()
-        ? (*out = *run_for_output(args), true)
-        : false;
+// The openssl binary comes from $POTATO_OPENSSL or PATH.
+std::string openssl_binary() {
+    return resolve_tool(get_env("POTATO_OPENSSL").value_or("openssl"));
+}
+
+bool run_openssl(const std::string& subcommand,
+                 const std::vector<std::string>& rest,
+                 std::string* out) {
+    std::string bin = openssl_binary();
+    if (bin.empty()) return false;
+    std::vector<std::string> args;
+    args.push_back(bin);
+    args.push_back(subcommand);
+    args.insert(args.end(), rest.begin(), rest.end());
+    auto result = run_for_output(args);
+    if (result) {
+        if (out) *out = *result;
+        return true;
+    }
+    return false;
 }
 
 std::string temp_file(const std::string& content) {
-    std::string path = "/tmp/potato-launcher-rsa-" + random_suffix();
+    std::string path = join_path(temp_directory(), "potato-rsa-" + random_suffix());
     write_file(path, content);
     return path;
 }
@@ -47,7 +63,7 @@ std::string temp_file(const std::string& content) {
 // Returns the private key PEM, or empty on failure.
 std::string generate_rsa_key() {
     std::string pem;
-    if (run_openssl({"openssl", "genrsa", "2048"}, &pem) && !pem.empty())
+    if (run_openssl("genrsa", {"2048"}, &pem) && !pem.empty())
         return pem;
     return {};
 }
@@ -55,7 +71,7 @@ std::string generate_rsa_key() {
 std::string rsa_public_pem(const std::string& private_pem) {
     std::string keyfile = temp_file(private_pem);
     std::string pub;
-    run_openssl({"openssl", "rsa", "-in", keyfile, "-pubout"}, &pub);
+    run_openssl("rsa", {"-in", keyfile, "-pubout"}, &pub);
     remove(keyfile.c_str());
     return pub;
 }
@@ -75,9 +91,9 @@ std::string rsa_sign_sha1(const std::string& private_pem, const std::string& dat
 
     std::string keyfile = temp_file(private_pem);
     std::string datafile = temp_file(digest_info);
-    std::string sigfile = "/tmp/potato-launcher-sig-" + random_suffix();
-    bool ok = run_for_output({"openssl", "rsautl", "-sign", "-inkey", keyfile,
-                              "-in", datafile, "-pkcs", "-out", sigfile}).has_value();
+    std::string sigfile = join_path(temp_directory(), "potato-sig-" + random_suffix());
+    bool ok = run_openssl("rsautl", {"-sign", "-inkey", keyfile,
+                                     "-in", datafile, "-pkcs", "-out", sigfile}, nullptr);
     remove(keyfile.c_str());
     remove(datafile.c_str());
     if (!ok) {

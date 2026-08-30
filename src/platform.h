@@ -73,8 +73,34 @@ std::string shell_quote(const std::string& s);
 // Run "cmd -version" style programs, returning the whole stdout.
 std::optional<std::string> run_for_output(const std::vector<std::string>& argv);
 
+// Like run_for_output but merges stderr into the captured output
+// (needed for programs like `java -version` that print to stderr).
+std::optional<std::string> run_for_output_merged(const std::vector<std::string>& argv);
+
 // Parse the major java version out of `java -version` output.
 // "version \"1.8.0_412\"" -> 8 ; "version \"17.0.11\"" -> 17
 int parse_java_major_version(const std::string& output);
+
+// Directory for temporary files, honoring TMPDIR/TEMP/TMP before falling back
+// to the platform default (e.g. /tmp, or %TEMP% on Windows).
+std::string temp_directory();
+
+// Locate an executable by name through PATH, or an absolute path.
+// Returns the resolved path, or empty when not found.
+std::string find_in_path(const std::string& program);
+
+// Detect the major java version of a candidate binary ("" -> not runnable).
+int detect_java_major(const std::string& java_binary);
+
+// Auto-detect a java runtime matching `required_major` (0 = any).
+// Checks, in order: PATH "java", JAVA_HOME, and common install locations
+// (/usr/lib/jvm, /usr/java, /opt/java, macOS /Library/Java/..., Windows
+// Program Files). Prefers an exact major-version match, else the newest one.
+// Returns "" when nothing usable was found.
+std::string find_java(int required_major);
+
+// Resolve a runtime tool like curl/openssl. An absolute path or a bare name
+// found on PATH is returned as-is; otherwise "".
+std::string resolve_tool(const std::string& name);
 
 } // namespace pl

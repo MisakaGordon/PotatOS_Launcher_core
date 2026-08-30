@@ -148,11 +148,31 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 
 ### 依赖
 
-- HTTP 使用系统 `curl` 二进制
-- 离线皮肤的 RSA 签名使用 `openssl` 命令行
+- HTTP 使用系统 `curl` 二进制（可用环境变量 `POTATO_CURL` 指定路径）
+- 离线皮肤的 RSA 签名使用 `openssl` 命令行（可用 `POTATO_OPENSSL` 指定路径）
 - 哈希（MD5/SHA-1/SHA-256）与 base64 为 C++ 自带实现
+- Java 自动检测：不传 `--java` 时按 manifest 所需版本自动查找
+  （先查 PATH 的 `java`、`JAVA_HOME`，再扫 `/usr/lib/jvm`、macOS
+  `JavaVirtualMachines`、Windows `Program Files` 等常见位置）
 
 其余选项（分辨率、服务器直连、代理、优先级、启动脚本等）见 `--help`。
+
+## 在其他机器上运行
+
+启动器本身不绑定某台机器，只需满足以下运行时依赖：
+
+| 依赖 | 用途 | 缺失时的处理 |
+|------|------|--------------|
+| `curl` | yggdrasil 登录的 HTTP 请求 | 报错提示安装，或 `POTATO_CURL=/path/to/curl` |
+| `openssl` | 离线皮肤的签名 | 报错提示安装，或 `POTATO_OPENSSL=/path/to/openssl` |
+| Java | 运行游戏 | 不传 `--java` 时自动检测匹配版本 |
+
+- 临时文件使用系统临时目录（`TMPDIR`/`TEMP`/`TMP`），不写死 `/tmp`
+- 随机数用 `std::random_device`，不依赖 `/dev/urandom`
+- 离线皮肤依赖外部 `authlib-injector.jar`，各机器需自行准备
+
+**尚未实现**：Windows 进程管理（fork/exec → CreateProcess）仍为 TODO，目前只在
+Linux/macOS 上运行；Windows 需要补充进程分支与 `.bat`/`.ps1` 脚本生成。
 
 ## 真实环境验证
 

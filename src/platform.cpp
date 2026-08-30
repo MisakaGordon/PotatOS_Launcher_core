@@ -4,12 +4,14 @@
  */
 #include "platform.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fstream>
 #include <sstream>
+#include <utility>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -362,6 +364,44 @@ std::optional<std::string> run_for_output(const std::vector<std::string>& argv) 
 #endif
 }
 
+std::optional<std::string> run_for_output_merged(const std::vector<std::string>& argv) {
+#if defined(_WIN32)
+    return std::nullopt;
+#else
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return std::nullopt;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return std::nullopt;
+    }
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+        std::vector<char*> cargv;
+        for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+        cargv.push_back(nullptr);
+        execvp(cargv[0], cargv.data());
+        _exit(127);
+    }
+    close(pipefd[1]);
+    std::string out;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+        out.append(buf, static_cast<size_t>(n));
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        return std::nullopt;
+    return out;
+#endif
+}
+
 int parse_java_major_version(const std::string& output) {
     // "version \"1.8.0_412\"", "version \"17.0.11\"", "openjdk version \"21.0.3\""
     size_t pos = output.find("version \"");
@@ -376,6 +416,147 @@ int parse_java_major_version(const std::string& output) {
     size_t dot = ver.find('.');
     if (dot == std::string::npos) return std::atoi(ver.c_str());
     return std::atoi(ver.substr(0, dot).c_str());
+}
+
+std::string temp_directory() {
+    for (const char* v : {"TMPDIR", "TMP", "TEMP"}) {
+        if (auto env = get_env(v); env && !env->empty() && is_directory(*env))
+            return *env;
+    }
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, buf))
+        return buf;
+    return ".";
+#else
+    return "/tmp";
+#endif
+}
+
+std::string find_in_path(const std::string& program) {
+    if (program.find('/') != std::string::npos ||
+        (program.size() >= 2 && program[1] == ':'))  // windows drive path
+        return file_exists(program) ? program : "";
+    const char* path = std::getenv("PATH");
+    if (!path) return "";
+    std::string pathenv(path);
+    size_t pos = 0;
+    while (pos <= pathenv.size()) {
+        size_t nxt = pathenv.find(':', pos);
+        std::string dir = pathenv.substr(
+            pos, nxt == std::string::npos ? std::string::npos : nxt - pos);
+        if (dir.empty()) dir = ".";
+        std::string candidate = join_path(dir, program);
+        if (file_exists(candidate))
+            return candidate;
+        if (nxt == std::string::npos) break;
+        pos = nxt + 1;
+    }
+    return "";
+}
+
+int detect_java_major(const std::string& java_binary) {
+    if (java_binary.empty() || !file_exists(java_binary)) return -1;
+    // `java -version` prints to stderr, so capture both streams.
+    auto out = run_for_output_merged({java_binary, "-version"});
+    if (!out) return -1;
+    return parse_java_major_version(*out);
+}
+
+// List immediate subdirectories of a directory ("" for unreadable/missing).
+static std::vector<std::string> list_subdirs(const std::string& dir) {
+    std::vector<std::string> out;
+    if (!is_directory(dir)) return out;
+#if defined(_WIN32)
+    std::string pattern = join_path(dir, "*");
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            std::string name = fd.cFileName;
+            if (name != "." && name != "..")
+                out.push_back(join_path(dir, name));
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != nullptr) {
+        std::string name = ent->d_name;
+        if (name == "." || name == "..") continue;
+        std::string full = join_path(dir, name);
+        if (is_directory(full))
+            out.push_back(full);
+    }
+    closedir(d);
+#endif
+    return out;
+}
+
+std::string find_java(int required_major) {
+    // candidate list: (java binary path, major version)
+    std::vector<std::pair<std::string, int>> candidates;
+
+    // 1. `java` on PATH
+    if (std::string j = find_in_path("java"); !j.empty()) {
+        int v = detect_java_major(j);
+        if (v > 0) candidates.emplace_back(j, v);
+    }
+    // 2. JAVA_HOME
+    if (auto jh = get_env("JAVA_HOME"); jh && !jh->empty()) {
+        std::string j = join_path(*jh, is_windows() ? "bin\\java.exe" : "bin/java");
+        int v = detect_java_major(j);
+        if (v > 0) candidates.emplace_back(j, v);
+    }
+    // 3. common install locations
+    std::vector<std::string> roots;
+#if defined(_WIN32)
+    if (auto pf = get_env("ProgramFiles"); pf)
+        roots.push_back(join_path(*pf, "Java"));
+    if (auto pf = get_env("ProgramFiles(x86)"); pf)
+        roots.push_back(join_path(*pf, "Java"));
+    if (auto lf = get_env("LOCALAPPDATA"); lf)
+        roots.push_back(join_path(*lf, "Programs"));
+#elif defined(__APPLE__)
+    roots.push_back("/Library/Java/JavaVirtualMachines");
+    roots.push_back("/System/Library/Java/JavaVirtualMachines");
+    roots.push_back("/opt/homebrew/opt");
+#else
+    roots.push_back("/usr/lib/jvm");
+    roots.push_back("/usr/java");
+    roots.push_back("/opt/java");
+    roots.push_back("/opt/jdk");
+#endif
+    for (const auto& root : roots) {
+        for (const auto& sub : list_subdirs(root)) {
+            std::string j = join_path(sub, is_windows() ? "bin\\java.exe" : "bin/java");
+            int v = detect_java_major(j);
+            if (v > 0)
+                candidates.emplace_back(j, v);
+        }
+    }
+
+    if (candidates.empty())
+        return "";
+
+    // Prefer an exact major match; otherwise the newest runtime.
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    if (required_major > 0) {
+        for (const auto& c : candidates)
+            if (c.second == required_major)
+                return c.first;
+    }
+    return candidates.front().first;
+}
+
+std::string resolve_tool(const std::string& name) {
+    if (name.find('/') != std::string::npos)
+        return file_exists(name) ? name : "";
+    return find_in_path(name);
 }
 
 } // namespace pl

@@ -91,10 +91,19 @@ HttpResponse http_request(HttpMethod method,
                           int timeout_seconds) {
     HttpResponse resp;
 
-    std::string tmp = "/tmp/potato-launcher-http";
+    // The curl binary is looked up from $POTATO_CURL (or PATH). A clear error
+    // is reported when it is missing so users can install it or point at one.
+    std::string curl = resolve_tool(
+        get_env("POTATO_CURL").value_or("curl"));
+    if (curl.empty()) {
+        resp.ok = false;
+        return resp;
+    }
+
+    std::string tmp = temp_directory();
     create_directories(tmp);
-    std::string body_file = join_path(tmp, "req-" + random_suffix());
-    std::string out_file = join_path(tmp, "resp-" + random_suffix());
+    std::string body_file = join_path(tmp, "potato-req-" + random_suffix());
+    std::string out_file = join_path(tmp, "potato-resp-" + random_suffix());
 
     if (method != HttpMethod::Get && !body.empty()) {
         std::ofstream out(body_file, std::ios::binary);
@@ -103,7 +112,7 @@ HttpResponse http_request(HttpMethod method,
     }
 
     std::vector<std::string> args;
-    args.push_back("curl");
+    args.push_back(curl);
     args.push_back("-sS");
     args.push_back("--connect-timeout");
     args.push_back("15");

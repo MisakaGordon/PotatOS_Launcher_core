@@ -58,6 +58,7 @@ struct CliOptions {
     std::string join_server;       // --server
     bool quick_play = false;
 
+    bool java_explicit = false;    // --java was given by the user
     bool show_help = false;
 };
 
@@ -209,6 +210,7 @@ CliOptions parse_args(int argc, char** argv) {
             o.launch.metaspace = std::stoi(next(a));
         } else if (a == "--java") {
             o.launch.java_path = next(a);
+            o.java_explicit = true;
         } else if (a == "--java-arg") {
             o.launch.java_arguments.push_back(next(a));
         } else if (a == "--override-java-arg") {
@@ -356,6 +358,11 @@ AuthResult resolve_auth(CliOptions& o,
             throw std::runtime_error("--login yggdrasil requires an account store");
         if (o.username.empty() || o.password.empty())
             throw std::runtime_error("--login yggdrasil requires --username and --password");
+        // yggdrasil login needs the curl binary (or $POTATO_CURL).
+        if (resolve_tool(get_env("POTATO_CURL").value_or("curl")).empty())
+            throw std::runtime_error(
+                "yggdrasil login needs the curl binary. Install curl, or point "
+                "POTATO_CURL at it (e.g. export POTATO_CURL=/path/to/curl)");
         YggdrasilProvider provider{o.auth_server, o.session_server};
         auto acc = store->create_yggdrasil(provider, o.username, o.password);
         result.info = acc->log_in();
@@ -389,6 +396,19 @@ int main(int argc, char** argv) {
             throw std::runtime_error("cannot read version manifest: " + manifest_path);
 
         VersionManifest manifest = VersionManifest::parse(*json);
+
+        // Auto-detect a java matching the manifest requirement when the user
+        // did not pick one explicitly (--java). Scans JAVA_HOME / PATH / common
+        // install locations, preferring an exact major-version match.
+        if (!o.java_explicit) {
+            std::string j = find_java(manifest.java_version);
+            if (!j.empty())
+                o.launch.java_path = j;
+            else
+                std::cout << "[launcher] warning: no java runtime found; "
+                          << "using \"java\" from PATH (expected major version "
+                          << manifest.java_version << ")\n";
+        }
 
         if (!o.join_server.empty()) {
             std::string port;
