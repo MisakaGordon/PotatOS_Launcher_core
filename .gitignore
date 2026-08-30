@@ -15,3 +15,6 @@ CMakeFiles/
 
 # HMCL reference source (GPL-3.0, not part of this project)
 hmcl_basement/
+
+# Downloaded runtime dependencies
+authlib-injector-*.jar

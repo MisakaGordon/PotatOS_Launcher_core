@@ -16,6 +16,7 @@
 #else
 #include <unistd.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <cerrno>
 #endif
@@ -333,8 +334,13 @@ std::optional<std::string> run_for_output(const std::vector<std::string>& argv) 
     if (pid == 0) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
+        // keep stderr out of the captured output
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
         std::vector<char*> cargv;
         for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
         cargv.push_back(nullptr);

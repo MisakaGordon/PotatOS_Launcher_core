@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include "auth/auth.h"
 #include "command.h"
 #include "manifest.h"
 #include "process.h"
@@ -70,14 +71,6 @@ struct LaunchOptions {
     int proxy_port = -1;
     std::string proxy_username;
     std::string proxy_password;
-};
-
-struct AuthInfo {
-    std::string username;
-    std::string access_token;
-    std::string uuid;
-    std::string user_type = "mojang";
-    std::string user_properties = "{}";
 };
 
 // The default launcher: builds the java command line from a version manifest

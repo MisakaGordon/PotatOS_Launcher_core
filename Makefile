@@ -7,7 +7,9 @@ INCLUDES  = -Isrc -Ivendor -Ivendor/nlohmann -Ivendor/miniz
 TARGET    = potato-launcher
 
 SRCS = src/main.cpp src/platform.cpp src/manifest.cpp src/command.cpp \
-       src/process.cpp src/zip.cpp src/launcher.cpp
+       src/process.cpp src/zip.cpp src/launcher.cpp \
+       src/auth/crypto.cpp src/auth/http.cpp src/auth/accountstore.cpp \
+       src/auth/yggdrasil.cpp src/auth/offline.cpp src/auth/authserver.cpp
 MINIZ_SRCS = vendor/miniz/miniz.c vendor/miniz/miniz_tdef.c \
              vendor/miniz/miniz_tinfl.c vendor/miniz/miniz_zip.c
 MINIZ_OBJS = $(MINIZ_SRCS:.c=.o)
@@ -17,7 +19,7 @@ OBJS = $(SRCS:.cpp=.o) $(MINIZ_OBJS)
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $(OBJS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -pthread -o $@ $(OBJS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<

@@ -29,6 +29,12 @@ add_executable(potato-launcher
     src/process.cpp
     src/zip.cpp
     src/launcher.cpp
+    src/auth/crypto.cpp
+    src/auth/http.cpp
+    src/auth/accountstore.cpp
+    src/auth/yggdrasil.cpp
+    src/auth/offline.cpp
+    src/auth/authserver.cpp
 )
 target_include_directories(potato-launcher PRIVATE
     src
@@ -39,6 +45,8 @@ target_link_libraries(potato-launcher PRIVATE miniz)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(potato-launcher PRIVATE -Wall -Wextra)
+    find_package(Threads REQUIRED)
+    target_link_libraries(potato-launcher PRIVATE Threads::Threads)
 endif()
 
 install(TARGETS potato-launcher RUNTIME DESTINATION bin)

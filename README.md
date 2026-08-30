@@ -1,9 +1,9 @@
 # potato-launcher
 
 一个用 C++ 编写的极简 Minecraft 启动器。它从 HMCL
-(`https://github.com/HMCL-dev/HMCL`) 的启动器实现中学习而来，用 C++17 重新实现了
-"读取版本清单 → 组装 java 命令 → 解压原生库 → 启动游戏 → 监控输出与退出码"
-的完整链路。
+(`hmcl_basement/launch/`、`hmcl_basement/auth/`) 的启动器实现中学习而来，用 C++17
+重新实现了 "身份验证 → 读取版本清单 → 组装 java 命令 → 解压原生库 → 启动游戏 →
+监控输出与退出码" 的完整链路。
 
 ## 功能
 
@@ -82,6 +82,48 @@ cmake --build build
 
 常用选项见 `--help`。
 
+## 登录（auth 模块）
+
+对应 HMCL `org.jackhuang.hmcl.auth` 包：
+
+| HMCL | 本项目 | 说明 |
+|------|--------|------|
+| `YggdrasilService` | `auth/yggdrasil.{h,cpp}` | authenticate / refresh / validate / invalidate |
+| `YggdrasilSession` | `auth/yggdrasil.h::YggdrasilSession` | accessToken / clientToken / selectedProfile / userProperties |
+| `YggdrasilAccount.logIn` | `auth/yggdrasil.cpp::YggdrasilAccount::log_in` | validate → refresh → CredentialExpiredException |
+| `RemoteAuthenticationException` | `auth/auth.h` | `{error, errorMessage, cause}` 结构化错误 |
+| `OfflineAccountFactory.getUUIDFromUserName` | `auth/offline.cpp::offline_uuid_for` | `UUID.nameUUIDFromBytes("OfflinePlayer:"+name)` 精确一致 |
+| 离线皮肤 `YggdrasilServer` | `auth/authserver.{h,cpp}` | 本地 yggdrasil API + SHA1withRSA 签名 |
+| `accounts.json` | `auth/accountstore.{h,cpp}` | 账户持久化与复用 |
+
+两种登录方式：
+
+- **yggdrasil**：`--login yggdrasil --username X --password Y`
+  （`--auth-server` / `--session-server` 可指向第三方验证服务器）
+- **offline**：`--login offline --username X`（UUID 由名字推导，可 `--uuid` 指定）
+
+依赖：HTTP 使用系统 `curl` 二进制；离线皮肤的 RSA 签名使用 `openssl` 命令行；
+哈希（MD5/SHA-1/SHA-256）与 base64 为 C++ 自带实现。
+
+```sh
+# 离线
+./potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+    --login offline --username Player --max-mem 2048
+
+# yggdrasil（Mojang 账号）
+./potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+    --login yggdrasil --username you@example.com --password ... --max-mem 2048
+
+# 使用已保存账户（自动 validate/refresh）
+./potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+    --account account:xxxx --max-mem 2048
+
+# 离线 + 皮肤（需要 authlib-injector.jar）
+./potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+    --login offline --username Player --skin skin.png --skin-model slim \
+    --authlib-injector ~/authlib-injector.jar --max-mem 2048
+```
+
 ## 真实环境验证
 
 已在 `/home/misaka/.minecraft/` 的 **Minecraft 26.2**（Java 25，LWJGL 3.4.1）
@@ -97,11 +139,13 @@ cmake --build build
 
 ## 与 HMCL 的差异（简化点）
 
-- 未实现身份验证（登录）、版本下载、资源文件管理、模组解析（Forge/Fabric 组件检测）
+- 未实现微软（MSA/OAuth）登录——按任务要求跳过
+- 未实现版本下载、资源文件管理、模组解析（Forge/Fabric 组件检测）
 - 只实现 POSIX（Linux/macOS）进程路径；Windows 需要补充 CreateProcess 分支
 - 未实现 `-DignoreList` 的 BootstrapLauncher 重写、显卡/渲染器环境变量、Mesa/Vulkan 驱动注入
 - log4j2.xml 为内嵌的最小可用版本，而非 HMCL 资源文件
-- `${launcher_name}` / `${clientid}` / `${auth_xuid}` 等占位符提供默认值
+- 账户存储简化：元数据与凭据合并为单个 JSON 数组（HMCL 分 accounts.json + 私有数据）
+- 离线皮肤依赖外部 `authlib-injector.jar`（需自行下载）与本地 yggdrasil 服务器
 
 ## 许可
 

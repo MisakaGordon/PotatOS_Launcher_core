@@ -2,11 +2,18 @@
  * potato's launcher - a minimal Minecraft launcher in C++
  * main.cpp - command line interface
  *
- * Usage example:
- *   potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
- *       --username Player --uuid 00000000-0000-0000-0000-000000000000 \
- *       --access-token 00000000000000000000000000000000 --max-mem 2048
+ * Usage examples:
+ *   offline: potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+ *              --login offline --username Player --max-mem 2048
+ *   yggdrasil: potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+ *              --login yggdrasil --username email@example.com --password secret
+ *   stored:    potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
+ *              --account account:xxxx --max-mem 2048
  */
+#include "auth/accountstore.h"
+#include "auth/authserver.h"
+#include "auth/offline.h"
+#include "auth/yggdrasil.h"
 #include "launcher.h"
 #include "manifest.h"
 #include "platform.h"
@@ -23,15 +30,32 @@ namespace {
 struct CliOptions {
     std::string game_dir;
     std::string version;
-    std::string manifest_path;
 
     LaunchOptions launch;
-    AuthInfo auth;
 
-    std::string script_path;      // --launch-script
-    bool print_command = false;   // --print-command
-    bool launch_and_wait = true;
-    std::string join_server;      // --server
+    // auth
+    std::string login_method;      // "" | "offline" | "yggdrasil"
+    std::string username;
+    std::string password;
+    std::string uuid;              // explicit offline uuid
+    std::string account_id;        // --account: use a stored account
+    std::string account_store;     // accounts.json path
+    bool save_account = false;
+    std::string auth_server = "https://authserver.mojang.com";
+    std::string session_server = "https://sessionserver.mojang.com";
+
+    // legacy manual AuthInfo mode
+    std::string access_token_manual;
+    std::string user_type_manual = "mojang";
+
+    // offline skin (needs authlib-injector)
+    std::string skin_file;
+    std::string skin_model = "wide";
+    std::string authlib_injector;
+
+    std::string script_path;       // --launch-script
+    bool print_command = false;    // --print-command
+    std::string join_server;       // --server
     bool quick_play = false;
 
     bool show_help = false;
@@ -47,11 +71,24 @@ void print_help(const char* prog) {
         "  --game-dir DIR       path to the .minecraft directory\n"
         "  --version ID         version id (versions/<id>/<id>.json is read)\n"
         "\n"
-        "Account:\n"
-        "  --username NAME       in-game player name\n"
-        "  --uuid UUID           player uuid (with or without dashes)\n"
-        "  --access-token TOKEN  auth access token (offline: any non-empty value)\n"
-        "  --user-type TYPE      mojang | offline | msa (default mojang)\n"
+        "Login:\n"
+        "  --login METHOD       offline | yggdrasil\n"
+        "  --username NAME      player / login name\n"
+        "  --password PASS      yggdrasil password (required with --login yggdrasil)\n"
+        "  --uuid UUID          offline: explicit player uuid (default: derived)\n"
+        "  --account ID         use a stored account instead of logging in\n"
+        "  --account-store PATH accounts.json (default: <game-dir>/potato-accounts.json)\n"
+        "  --save-account       persist the account after login\n"
+        "  --auth-server URL    yggdrasil auth base url (default: mojang authserver)\n"
+        "  --session-server URL yggdrasil session base url\n"
+        "\n"
+        "  The legacy flags --username/--uuid/--access-token/--user-type also work\n"
+        "  as a manual AuthInfo (no account management).\n"
+        "\n"
+        "Offline skin (optional):\n"
+        "  --skin FILE          png skin to serve (needs authlib-injector.jar)\n"
+        "  --skin-model MODEL   wide | slim\n"
+        "  --authlib-injector P path to authlib-injector.jar\n"
         "\n"
         "Memory & JVM:\n"
         "  --max-mem MB          -Xmx (e.g. 2048)\n"
@@ -112,7 +149,7 @@ bool version_at_least(const std::string& id, int min_minor, int min_patch) {
     try { minor = std::stoi(v.substr(d1 + 1)); } catch (...) { return false; }
     if (minor != min_minor) return minor > min_minor;
     size_t d2 = v.find('.', d1 + 1);
-    if (d2 == std::string::npos) return true; // "1.20" >= "1.20.5"? treat as patch 0 -> false below
+    if (d2 == std::string::npos) return true;
     int patch = 0;
     try { patch = std::stoi(v.substr(d2 + 1)); } catch (...) { return false; }
     return patch >= min_patch;
@@ -120,7 +157,6 @@ bool version_at_least(const std::string& id, int min_minor, int min_patch) {
 
 CliOptions parse_args(int argc, char** argv) {
     CliOptions o;
-    std::vector<std::string> server_port_args;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -137,14 +173,34 @@ CliOptions parse_args(int argc, char** argv) {
             o.launch.game_dir = o.game_dir;
         } else if (a == "--version") {
             o.version = next(a);
+        } else if (a == "--login") {
+            o.login_method = next(a);
         } else if (a == "--username") {
-            o.auth.username = next(a);
+            o.username = next(a);
+        } else if (a == "--password") {
+            o.password = next(a);
         } else if (a == "--uuid") {
-            o.auth.uuid = next(a);
+            o.uuid = next(a);
         } else if (a == "--access-token") {
-            o.auth.access_token = next(a);
+            o.access_token_manual = next(a);
         } else if (a == "--user-type") {
-            o.auth.user_type = next(a);
+            o.user_type_manual = next(a);
+        } else if (a == "--account") {
+            o.account_id = next(a);
+        } else if (a == "--account-store") {
+            o.account_store = next(a);
+        } else if (a == "--save-account") {
+            o.save_account = true;
+        } else if (a == "--auth-server") {
+            o.auth_server = next(a);
+        } else if (a == "--session-server") {
+            o.session_server = next(a);
+        } else if (a == "--skin") {
+            o.skin_file = next(a);
+        } else if (a == "--skin-model") {
+            o.skin_model = next(a);
+        } else if (a == "--authlib-injector") {
+            o.authlib_injector = next(a);
         } else if (a == "--max-mem") {
             o.launch.max_memory = std::stoi(next(a));
         } else if (a == "--min-mem") {
@@ -207,10 +263,8 @@ CliOptions parse_args(int argc, char** argv) {
             o.launch.proxy_password = next(a);
         } else if (a == "--launch-script") {
             o.script_path = next(a);
-            o.launch_and_wait = false;
         } else if (a == "--print-command") {
             o.print_command = true;
-            o.launch_and_wait = false;
         } else if (a == "--debug-log") {
             o.launch.enable_debug_log_output = true;
         } else {
@@ -223,9 +277,99 @@ CliOptions parse_args(int argc, char** argv) {
             throw std::runtime_error("--game-dir is required");
         if (o.version.empty())
             throw std::runtime_error("--version is required");
+        if (!o.login_method.empty() && o.login_method != "offline" && o.login_method != "yggdrasil")
+            throw std::runtime_error("--login must be offline or yggdrasil");
     }
 
     return o;
+}
+
+// ---------------------------------------------------------------------------
+// Auth resolution
+// ---------------------------------------------------------------------------
+
+// Read the skin file into memory.
+LoadedSkin load_skin(const CliOptions& o) {
+    LoadedSkin skin;
+    if (o.skin_file.empty()) return skin;
+    auto data = read_small_file(o.skin_file);
+    if (!data)
+        throw std::runtime_error("cannot read skin file: " + o.skin_file);
+    skin.png_data = *data;
+    skin.slim = (o.skin_model == "slim");
+    return skin;
+}
+
+// Resolve the AuthInfo + extra jvm args for this launch.
+// `store` may be null when no account management is used.
+// `skin_server` out-param is set when a local yggdrasil server must stay alive
+// for the whole game session (offline + skin).
+AuthResult resolve_auth(CliOptions& o,
+                        AccountStore* store,
+                        std::shared_ptr<YggdrasilServer>* skin_server) {
+    AuthResult result;
+
+    if (!o.account_id.empty()) {
+        if (!store)
+            throw std::runtime_error("no account store available");
+        auto acc = store->find(o.account_id);
+        if (!acc)
+            throw std::runtime_error("account not found: " + o.account_id);
+        result.info = acc->log_in();  // yggdrasil: validate/refresh; offline: direct
+        return result;
+    }
+
+    if (o.login_method == "offline") {
+        if (!store)
+            throw std::runtime_error("--login offline requires an account store");
+        std::string uuid = o.uuid.empty() ? offline_uuid_for(o.username) : o.uuid;
+        auto acc = store->create_offline(o.username, uuid);
+        result.info = acc->log_in();
+
+        if (!o.skin_file.empty()) {
+            if (o.authlib_injector.empty())
+                throw std::runtime_error(
+                    "--skin requires --authlib-injector PATH (download authlib-injector.jar "
+                    "from https://authlib-injector.yushi.moe/)");
+            if (!file_exists(o.authlib_injector))
+                throw std::runtime_error("authlib-injector jar not found: " + o.authlib_injector);
+
+            auto server = std::make_shared<YggdrasilServer>();
+            if (!server->start(0))
+                throw std::runtime_error("cannot start the local yggdrasil server "
+                                         "(openssl is required)");
+            server->add_character(acc->profile_id(), acc->profile_name(), load_skin(o));
+
+            result.extra_jvm_args.push_back(server->authlib_injector_agent(o.authlib_injector));
+            result.extra_jvm_args.push_back("-Dauthlibinjector.side=client");
+            if (skin_server)
+                *skin_server = server;
+        }
+
+        if (o.save_account)
+            store->add(acc);
+        return result;
+    }
+
+    if (o.login_method == "yggdrasil") {
+        if (!store)
+            throw std::runtime_error("--login yggdrasil requires an account store");
+        if (o.username.empty() || o.password.empty())
+            throw std::runtime_error("--login yggdrasil requires --username and --password");
+        YggdrasilProvider provider{o.auth_server, o.session_server};
+        auto acc = store->create_yggdrasil(provider, o.username, o.password);
+        result.info = acc->log_in();
+        if (o.save_account)
+            store->add(acc);
+        return result;
+    }
+
+    // Legacy manual AuthInfo (no account management).
+    result.info.username = o.username;
+    result.info.uuid = o.uuid;
+    result.info.access_token = o.access_token_manual;
+    result.info.user_type = o.user_type_manual;
+    return result;
 }
 
 } // namespace
@@ -260,7 +404,30 @@ int main(int argc, char** argv) {
             }
         }
 
-        DefaultLauncher launcher(manifest, o.launch, o.auth);
+        // ---- auth ----
+        std::string store_path = o.account_store.empty()
+            ? join_path(o.game_dir, "potato-accounts.json")
+            : o.account_store;
+
+        AccountStore store;
+        store.load(store_path);
+
+        std::shared_ptr<YggdrasilServer> skin_server;
+        AuthResult auth;
+        bool used_account_store = !o.login_method.empty() || !o.account_id.empty();
+        if (used_account_store || o.save_account) {
+            auth = resolve_auth(o, &store, &skin_server);
+            if (o.save_account)
+                store.save(store_path);
+        } else {
+            auth = resolve_auth(o, nullptr, &skin_server);
+        }
+
+        // extra jvm args from the auth method (e.g. -javaagent for skins)
+        for (const auto& arg : auth.extra_jvm_args)
+            o.launch.java_arguments.push_back(arg);
+
+        DefaultLauncher launcher(manifest, o.launch, auth.info);
 
         if (o.print_command) {
             std::cout << render_command_line(launcher.generate_command_line()) << "\n";
