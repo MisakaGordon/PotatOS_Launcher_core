@@ -18,3 +18,6 @@ hmcl_basement/
 
 # Downloaded runtime dependencies
 authlib-injector-*.jar
+
+# Detailed local-only documentation (README keeps only the essentials)
+DETAILS.md
