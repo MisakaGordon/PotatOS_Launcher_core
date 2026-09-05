@@ -5,6 +5,7 @@
 #include "platform.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
@@ -21,6 +22,10 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <cerrno>
+#endif
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
 #endif
 
 namespace pl {
@@ -52,6 +57,25 @@ std::string os_name() {
 
 bool is_64bit() {
     return sizeof(void*) == 8;
+}
+
+long long total_memory_bytes() {
+#if defined(_WIN32)
+    return 0;
+#elif defined(__APPLE__)
+    int mib[2] = {CTL_HW, HW_MEMSIZE};
+    uint64_t size = 0;
+    size_t len = sizeof(size);
+    if (sysctl(mib, 2, &size, &len, nullptr, 0) == 0)
+        return static_cast<long long>(size);
+    return 0;
+#else
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long psize = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || psize <= 0)
+        return 0;
+    return static_cast<long long>(pages) * psize;
+#endif
 }
 
 std::string os_arch() {

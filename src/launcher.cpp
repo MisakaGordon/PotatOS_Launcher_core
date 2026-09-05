@@ -93,6 +93,38 @@ static std::string assets_dir(const std::string& game_dir) {
     return join_path(game_dir, "assets");
 }
 
+// Numeric major.minor compare of a version id like "1.20.4", "v1.7.10" or
+// "26.2-snapshot-2". Non-numeric ids (e.g. "24w14a") compare as (0, 0).
+static bool version_ge(const std::string& id, int req_major, int req_minor) {
+    std::string v = id;
+    if (v.rfind("v", 0) == 0) v = v.substr(1);
+    size_t d1 = v.find('.');
+    int major = 0, minor = 0;
+    try {
+        major = d1 == std::string::npos ? std::stoi(v) : std::stoi(v.substr(0, d1));
+    } catch (...) {
+        return false;
+    }
+    if (d1 != std::string::npos) {
+        std::string rest = v.substr(d1 + 1);
+        std::string minor_part = rest.substr(0, rest.find_first_of(".-"));
+        try { minor = std::stoi(minor_part); } catch (...) { minor = 0; }
+    }
+    if (major != req_major) return major > req_major;
+    return minor >= req_minor;
+}
+
+// Render argv as a bash command line, single-quoting each token so paths with
+// spaces survive (render_command_line is only for display).
+static std::string quoted_command_line(const std::vector<std::string>& args) {
+    std::string out;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) out += ' ';
+        out += shell_quote(args[i]);
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 
 DefaultLauncher::DefaultLauncher(VersionManifest manifest, LaunchOptions options, AuthInfo auth)
@@ -127,21 +159,7 @@ std::map<std::string, bool> DefaultLauncher::features() const {
 bool DefaultLauncher::using_log4j() const {
     // log4j2 is used by Minecraft 1.7+; base the decision on the actual game
     // version id (the assetIndex id is just a number and must not be used here).
-    std::string base = manifest_.id;
-    if (base.rfind("v", 0) == 0) base = base.substr(1);
-    // 1.7, 1.7.2, 1.7.10 ...
-    auto dot1 = base.find('.');
-    if (dot1 == std::string::npos) return false;
-    int major = 0;
-    try { major = std::stoi(base.substr(0, dot1)); } catch (...) { return false; }
-    if (major > 1) return true;
-    if (major < 1) return false;
-    std::string rest = base.substr(dot1 + 1);
-    auto dot2 = rest.find('.');
-    if (dot2 == std::string::npos) dot2 = rest.size();
-    int minor = 0;
-    try { minor = std::stoi(rest.substr(0, dot2)); } catch (...) { return false; }
-    return minor >= 7;
+    return version_ge(manifest_.id, 1, 7);
 }
 
 std::string DefaultLauncher::log4j_config_path() const {
@@ -149,12 +167,10 @@ std::string DefaultLauncher::log4j_config_path() const {
 }
 
 void DefaultLauncher::extract_log4j_config() {
-    bool legacy = using_log4j();
-    std::string xml = legacy ? LOG4J2_1_12_XML : LOG4J2_1_7_XML;
-    if (!options_.enable_debug_log_output) {
-        // both embedded configs are the "release" variants
-    }
-    write_file(log4j_config_path(), xml);
+    // HMCL splits the bundled config at 1.12: 1.7..1.11 get the "1.7" variant,
+    // 1.12+ the "1.12" one. (Never called for < 1.7, which has no log4j2.)
+    bool modern = version_ge(manifest_.id, 1, 12);
+    write_file(log4j_config_path(), modern ? LOG4J2_1_12_XML : LOG4J2_1_7_XML);
 }
 
 std::string DefaultLauncher::natives_dir() const {
@@ -241,6 +257,9 @@ void DefaultLauncher::append_default_jvm_args(CommandBuilder& res) {
 
     res.add_default("-Dminecraft.client.jar=", absolute_path(main_jar_path(options_.game_dir, manifest_.id)));
 
+    if (is_macos())
+        res.add_default("-Xdock:name=", "Minecraft " + manifest_.id);
+
     res.add_default("-Duser.home=", parent_dir(absolute_path(options_.game_dir)));
 
     // proxy
@@ -259,7 +278,7 @@ void DefaultLauncher::append_default_jvm_args(CommandBuilder& res) {
         }
     }
 
-    if (!options_.no_generated_optimizing_jvm_args && java_version >= 8) {
+    if (!options_.no_generated_optimizing_jvm_args) {
         // G1GC tuning flags are experimental; unlock them first (matching HMCL).
         if (!res.has_prefix("-XX:+UnlockExperimentalVMOptions"))
             res.add("-XX:+UnlockExperimentalVMOptions");
@@ -276,7 +295,7 @@ void DefaultLauncher::append_default_jvm_args(CommandBuilder& res) {
                 break;
             }
         }
-        if (!custom_gc) {
+        if (java_version >= 8 && !custom_gc) {
             res.add_unstable_default("-XX:+UseG1GC", "");
             res.add_unstable_default("-XX:G1MixedGCCountTarget=", "5");
             res.add_unstable_default("-XX:G1NewSizePercent=", "20");
@@ -284,11 +303,45 @@ void DefaultLauncher::append_default_jvm_args(CommandBuilder& res) {
             res.add_unstable_default("-XX:MaxGCPauseMillis=", "50");
             res.add_unstable_default("-XX:G1HeapRegionSize=", "32m");
         }
+
+        res.add_unstable_default("-XX:-OmitStackTraceInFastThrow", "");
+        if (java_version <= 8)
+            res.add_unstable_default("-XX:MaxInlineLevel=", "15");
+
+        // On 64-bit JVMs with plenty of RAM, raise the JIT / code-cache budget
+        // (mirrors HMCL's defaults).
+        if (is_64bit() && total_memory_bytes() > 4LL * 1024 * 1024 * 1024) {
+            res.add_unstable_default("-XX:-DontCompileHugeMethods", "");
+            res.add_unstable_default("-XX:MaxNodeLimit=", "240000");
+            res.add_unstable_default("-XX:NodeLimitFudgeFactor=", "8000");
+            res.add_unstable_default("-XX:TieredCompileTaskTimeout=", "10000");
+            res.add_unstable_default("-XX:ReservedCodeCacheSize=", "400M");
+            if (java_version >= 9) {
+                res.add_unstable_default("-XX:NonNMethodCodeHeapSize=", "12M");
+                res.add_unstable_default("-XX:ProfiledCodeHeapSize=", "194M");
+            }
+            if (java_version >= 8)
+                res.add_unstable_default("-XX:NmethodSweepActivity=", "1");
+        }
+
+        // JDK 25/26 enable compact object headers by default; pin the flag so
+        // tuned heaps behave consistently.
+        if (is_64bit() && java_version >= 25 && java_version <= 26)
+            res.add_unstable_default("-XX:+UseCompactObjectHeaders", "");
+
+        // 32-bit JVMs allocate 320KB stacks by default rather than the 1MB of
+        // 64-bit JVMs, crashing Minecraft 1.13+ with StackOverflowError.
+        if (!is_64bit())
+            res.add_default("-Xss", "1m");
     }
 
-    // 32-bit JVMs get a larger default stack to avoid 1.13 StackOverflowError.
-    if (!is_64bit())
-        res.add_default("-Xss", "1m");
+    // Java 16 enforces strong encapsulation by default; MC 1.17+ needs this.
+    if (java_version == 16)
+        res.add_default("--illegal-access=", "permit");
+
+    // JDK 24/25 restrict sun.misc.Unsafe memory-access; LWJGL-based games need it.
+    if (java_version == 24 || java_version == 25)
+        res.add_default("--sun-misc-unsafe-memory-access=", "allow");
 
     res.add_default("-Dfml.ignoreInvalidMinecraftCertificates=", "true");
     res.add_default("-Dfml.ignorePatchDiscrepancies=", "true");
@@ -516,7 +569,7 @@ bool DefaultLauncher::make_launch_script(const std::string& script_path, std::st
     out += "cd " + shell_quote(absolute_path(options_.game_dir)) + "\n";
     if (!options_.pre_launch_command.empty())
         out += options_.pre_launch_command + "\n";
-    out += render_command_line(command) + "\n";
+    out += quoted_command_line(command) + "\n";
     if (!options_.post_exit_command.empty())
         out += options_.post_exit_command + "\n";
 

@@ -33,6 +33,9 @@ std::string os_name();
 // Pointer width, i.e. the JVM "bits" we will assume for the default java.
 bool is_64bit();
 
+// Total physical RAM in bytes; 0 when it cannot be determined.
+long long total_memory_bytes();
+
 // Value used for the "arch" field of os rules: "x86", "x86_64", "arm64"...
 std::string os_arch();
 
