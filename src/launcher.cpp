@@ -125,6 +125,63 @@ static std::string quoted_command_line(const std::vector<std::string>& args) {
     return out;
 }
 
+// The main class used by Forge / NeoForge 1.17+.
+static const char kBootstraplauncherMain[] = "cpw.mods.bootstraplauncher.BootstrapLauncher";
+
+// Split on ',' (the -DignoreList value format).
+static std::vector<std::string> split_comma(const std::string& s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (true) {
+        size_t comma = s.find(',', start);
+        if (comma == std::string::npos) {
+            out.push_back(s.substr(start));
+            break;
+        }
+        out.push_back(s.substr(start, comma - start));
+        start = comma + 1;
+    }
+    return out;
+}
+
+// Forge / NeoForge 1.17+ launch via BootstrapLauncher refuses to start when a
+// classpath jar shadows a module that is already loaded from the JVM module path
+// (e.g. the ASM copy a game manifest ships alongside the module-path copy the
+// bootstrapper itself needs). Jars whose file name starts with one of the
+// -DignoreList tokens are exempt from that check. The property's built-in
+// defaults ("asm","securejarhandler") are lost whenever the manifest overrides
+// it, so merge them back in, and make sure the primary jar is listed too so that
+// it is kept out of the legacy-classpath scan and handled as the game module
+// (mirrors HMCL's LaunchManifestNormalizer.repairBootstrapLauncher).
+static void repair_bootstraplauncher_ignore_list(std::vector<std::string>& args,
+                                                 const Configurations& config) {
+    for (std::string& arg : args) {
+        static const char kPrefix[] = "-DignoreList=";
+        if (arg.rfind(kPrefix, 0) != 0)
+            continue;
+        std::vector<std::string> tokens = split_comma(arg.substr(sizeof(kPrefix) - 1));
+        auto has = [&tokens](const std::string& t) {
+            for (const auto& s : tokens)
+                if (s == t) return true;
+            return false;
+        };
+        if (!has("asm"))
+            tokens.push_back("asm");
+        if (!has("securejarhandler"))
+            tokens.push_back("securejarhandler");
+        auto it = config.find("primary_jar_name");
+        if (it != config.end() && !it->second.empty() && !has(it->second))
+            tokens.push_back(it->second);
+
+        std::string value;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            if (i) value += ',';
+            value += tokens[i];
+        }
+        arg = std::string(kPrefix) + value;
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 DefaultLauncher::DefaultLauncher(VersionManifest manifest, LaunchOptions options, AuthInfo auth)
@@ -188,7 +245,12 @@ std::vector<std::string> DefaultLauncher::classpath() const {
         if (!lib.applies(features()))
             continue;
         std::string path = absolute_path(join_path(libraries_dir(options_.game_dir), lib.relative_path()));
-        if (file_exists(path))
+        if (!file_exists(path))
+            continue;
+        // Installer-generated manifests (e.g. NeoForge) can list the same library
+        // twice; a duplicated -cp entry makes BootstrapLauncher's UnionFileSystem
+        // crash on a duplicate path key, so de-duplicate like HMCL.
+        if (std::find(out.begin(), out.end(), path) == out.end())
             out.push_back(path);
     }
     return out;
@@ -414,7 +476,11 @@ std::vector<std::string> DefaultLauncher::generate_command_line() {
 
     // Manifest jvm arguments (with ${...} placeholders resolved).
     Configurations config = configurations();
-    res.add_all(substitute_all(manifest_.resolve_jvm_arguments(features()), config));
+    std::vector<std::string> manifest_jvm =
+        substitute_all(manifest_.resolve_jvm_arguments(features()), config);
+    if (manifest_.main_class == kBootstraplauncherMain)
+        repair_bootstraplauncher_ignore_list(manifest_jvm, config);
+    res.add_all(std::move(manifest_jvm));
 
     // Remove -Xincgc on Java 9+ (deprecated/removed flag).
     if (java_version >= 9)
