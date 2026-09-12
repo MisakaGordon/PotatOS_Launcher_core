@@ -29,6 +29,14 @@ struct ExtractRule {
     std::vector<std::string> exclude;
 };
 
+// A downloadable artifact (mirrors HMCL's DownloadInfo / LibraryDownloadInfo).
+struct DownloadInfo {
+    std::string path;       // relative path inside libraries/ (optional)
+    std::string url;        // direct download url
+    std::string sha1;       // expected SHA-1 (empty when unknown)
+    long long size = 0;
+};
+
 struct Library {
     std::string group;
     std::string name;       // artifact
@@ -43,6 +51,12 @@ struct Library {
 
     bool native = false;
 
+    // Download metadata from version.json.
+    std::string url;                                // repository base url ("url")
+    std::optional<DownloadInfo> artifact;           // downloads.artifact
+    std::map<std::string, DownloadInfo> classifiers;// downloads.classifiers
+    std::vector<std::string> checksums;             // "checksums"
+
     // group:name:version[:classifier]
     static Library parse(const std::string& name);
 
@@ -52,6 +66,21 @@ struct Library {
     // Relative path inside .minecraft/libraries, e.g.
     // "org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-linux.jar".
     std::string relative_path() const;
+
+    // Download metadata selected for this library (artifact, or the classifier
+    // entry for a native library). Mirrors HMCL Library.getRawDownloadInfo().
+    std::optional<DownloadInfo> raw_download() const;
+
+    // On-disk path relative to libraries/, preferring the manifest's
+    // downloads path when present (mirrors HMCL Library.getPath()).
+    std::string download_path() const;
+
+    // URL to fetch this library from: the download entry's url, else the
+    // library's repository base ("url") + path, else the Mojang default repo.
+    std::string download_url() const;
+
+    // Expected SHA-1: download entry, else the first "checksums" entry, else "".
+    std::string download_sha1() const;
 
     // Whether this library is selected for the current OS/arch and optional features.
     bool applies(const std::map<std::string, bool>& features) const;

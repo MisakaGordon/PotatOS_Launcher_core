@@ -1,8 +1,8 @@
 # potato-launcher
 
 一个用 C++17 编写的极简 Minecraft 启动器。它从 HMCL 的启动器实现中学习而来，
-重新实现了「身份验证 → 读取版本清单 → 组装 java 命令 → 解压原生库 → 启动游戏 →
-监控输出与退出码」的完整链路。目前支持 Linux/macOS（Windows 进程路径尚未实现），
+重新实现了「身份验证 → 读取版本清单 → 补全缺失的库 → 组装 java 命令 → 解压原生库 →
+启动游戏 → 监控输出与退出码」的完整链路。目前支持 Linux/macOS（Windows 进程路径尚未实现），
 登录支持 yggdrasil 与 offline，并可为离线账户提供自定义皮肤。
 
 技术细节（与 HMCL 的逐项对照、目录结构、构建方式、验证记录等）归档在本地文件
@@ -13,7 +13,7 @@
 `--game-dir`（`.minecraft` 目录）与 `--version`（版本 ID）是必填参数。启动前需确认
 已安装对应版本（`versions/<id>/<id>.json` 与 `<id>.jar`），并按版本要求选择 Java
 （如 1.20.4 需 Java 17，26.2 需 Java 25），可用 `--java` 指定；不指定时按清单要求
-自动查找。
+自动查找。清单中缺失的库文件会在启动前自动补全（默认镜像优先，见下）。
 
 ### 离线游玩
 
@@ -138,6 +138,23 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 | `--natives-dir DIR` | 覆盖原生库解压目录 |
 | `--use-custom-natives` | 跳过原生库解压（使用已有目录） |
 
+### 缺失库自动补全
+
+启动前会按 `version.json` 的 `downloads` / `url` 元数据检查每个适用于当前系统的库
+（含 `liblwjgl`、原生分类器等），缺失的自动下载到 `.minecraft/libraries`；下载经过
+`.part` 临时文件并在校验 SHA-1 后原子替换，不会破坏已有文件。默认**镜像优先**
+（BMCLAPI），失败再回退 Mojang 源。
+
+| 参数 | 说明 |
+|------|------|
+| `--no-download` | 关闭自动补全（不联网，缺失库照旧跳过） |
+| `--verify-files` | 对已存在的库校验 SHA-1，不一致则重新下载 |
+| `--download-source SRC` | `mirror`（默认，镜像优先）或 `mojang`（官方源优先） |
+| `--download-server URL` | 覆盖镜像根地址（默认 BMCLAPI） |
+
+> 补全发生在 `--launch-script` 与真正启动之前；`--print-command` 不触发下载。
+> 下载同样使用系统 `curl`，并遵循 `--proxy-*` 代理设置。
+
 ### 进程与运行环境
 
 | 参数 | 说明 |
@@ -158,9 +175,9 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 
 | 参数 | 说明 |
 |------|------|
-| `--launch-script PATH` | 生成可执行的 bash 启动脚本并退出（同样会先解压原生库） |
-| `--print-command` | 打印组装好的命令行并退出 |
+| `--launch-script PATH` | 生成可执行的 bash 启动脚本并退出（同样会先补全库、解压原生库） |
+| `--print-command` | 打印组装好的命令行并退出（不下载、不解压） |
 | `--help` | 显示帮助 |
 
-> 系统依赖：HTTP 使用系统 `curl`（可用 `POTATO_CURL` 指定），离线皮肤签名使用
+> 系统依赖：HTTP 与库下载使用系统 `curl`（可用 `POTATO_CURL` 指定），离线皮肤签名使用
 > `openssl`（可用 `POTATO_OPENSSL` 指定），游戏需已安装对应 Java。

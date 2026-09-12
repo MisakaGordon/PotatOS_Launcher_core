@@ -6,11 +6,13 @@
  * log4j configuration, process launch and launch-script generation.
  */
 #include "launcher.h"
+#include "download.h"
 #include "platform.h"
 #include "zip.h"
 
 #include <algorithm>
 #include <cctype>
+#include <iostream>
 #include <stdexcept>
 
 #if !defined(_WIN32)
@@ -244,7 +246,7 @@ std::vector<std::string> DefaultLauncher::classpath() const {
             continue;
         if (!lib.applies(features()))
             continue;
-        std::string path = absolute_path(join_path(libraries_dir(options_.game_dir), lib.relative_path()));
+        std::string path = absolute_path(join_path(libraries_dir(options_.game_dir), lib.download_path()));
         if (!file_exists(path))
             continue;
         // Installer-generated manifests (e.g. NeoForge) can list the same library
@@ -543,6 +545,62 @@ std::vector<std::string> DefaultLauncher::filter_empty_argument_pairs(std::vecto
     return out;
 }
 
+bool DefaultLauncher::ensure_libraries(std::string* error) {
+    std::string root = options_.download_mirror.empty()
+        ? std::string(kDefaultMirrorRoot)
+        : options_.download_mirror;
+
+    std::string proxy;
+    if (!options_.proxy_host.empty() && options_.proxy_port > 0) {
+        proxy = options_.proxy_host + ":" + std::to_string(options_.proxy_port);
+        if (!options_.proxy_username.empty())
+            proxy = options_.proxy_username + ":" + options_.proxy_password + "@" + proxy;
+    }
+
+    std::map<std::string, bool> f = features();
+    int downloaded = 0;
+    for (const Library& lib : manifest_.libraries) {
+        if (!lib.applies(f))
+            continue;
+
+        std::string dest = absolute_path(join_path(libraries_dir(options_.game_dir), lib.download_path()));
+        std::string sha1 = lib.download_sha1();
+
+        if (file_exists(dest)) {
+            if (!options_.verify_files || sha1.empty() || sha1_matches(dest, sha1))
+                continue;
+            std::cerr << "[download] checksum mismatch, refetching " << lib.download_path() << "\n";
+        }
+
+        std::string url = lib.download_url();
+        std::string mirrored = mirror_url(url, root);
+        std::vector<std::string> urls;
+        if (options_.download_mirror_first) {
+            if (mirrored != url) urls.push_back(mirrored);
+            urls.push_back(url);
+        } else {
+            urls.push_back(url);
+            if (mirrored != url) urls.push_back(mirrored);
+        }
+
+        std::cerr << "[download] " << lib.download_path() << "\n";
+        std::string err;
+        if (!download_file(urls, dest, sha1, proxy, &err)) {
+            if (error) {
+                *error = "failed to download library " + lib.group + ":" + lib.name + ":" +
+                         lib.version + (lib.classifier.empty() ? "" : ":" + lib.classifier) +
+                         " (" + err + ")";
+            }
+            return false;
+        }
+        ++downloaded;
+    }
+
+    if (downloaded > 0)
+        std::cerr << "[download] completed " << downloaded << " library file(s)\n";
+    return true;
+}
+
 bool DefaultLauncher::decompress_natives(std::string* error) {
     std::string target = natives_dir();
     create_directories(target);
@@ -555,7 +613,7 @@ bool DefaultLauncher::decompress_natives(std::string* error) {
         if (lib.extract)
             opts.exclude = lib.extract->exclude;
 
-        std::string jar = absolute_path(join_path(libraries_dir(options_.game_dir), lib.relative_path()));
+        std::string jar = absolute_path(join_path(libraries_dir(options_.game_dir), lib.download_path()));
         if (!file_exists(jar)) {
             if (error) *error = "native library not found: " + jar;
             return false;
@@ -581,6 +639,12 @@ std::map<std::string, std::string> DefaultLauncher::environment_variables() cons
 }
 
 void DefaultLauncher::launch(ProcessListener* listener) {
+    if (!options_.no_download) {
+        std::string err;
+        if (!ensure_libraries(&err))
+            throw std::runtime_error("failed to complete libraries: " + err);
+    }
+
     std::vector<std::string> command = generate_command_line();
     for (const auto& a : command)
         if (a.empty())
@@ -617,6 +681,14 @@ void DefaultLauncher::launch(ProcessListener* listener) {
 }
 
 bool DefaultLauncher::make_launch_script(const std::string& script_path, std::string* error) {
+    if (!options_.no_download) {
+        std::string err;
+        if (!ensure_libraries(&err)) {
+            if (error) *error = "failed to complete libraries: " + err;
+            return false;
+        }
+    }
+
     std::vector<std::string> command = generate_command_line();
 
     if (!options_.use_custom_natives) {

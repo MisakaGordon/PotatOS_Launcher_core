@@ -53,6 +53,12 @@ struct LaunchOptions {
     std::string natives_dir;            // empty -> auto under versions/<id>/
     bool use_custom_natives = false;
 
+    // Missing-resource downloads (mirrors HMCL's GameLibrariesTask).
+    bool no_download = false;                 // skip auto-completion entirely
+    bool verify_files = false;                // hash present files, re-fetch on mismatch
+    bool download_mirror_first = true;        // mirror-first, else Mojang-first
+    std::string download_mirror;              // mirror root (empty -> default)
+
     // JVM argument generation
     bool no_generated_jvm_args = false;
     bool no_generated_optimizing_jvm_args = false;
@@ -93,6 +99,11 @@ public:
 
     // Extract native libraries from their jars into the natives directory.
     bool decompress_natives(std::string* error);
+
+    // Ensure every applicable library jar exists, downloading missing (and,
+    // when verify_files is set, corrupt) ones from the manifest's download
+    // metadata. Mirrors HMCL's GameLibrariesTask / LibraryDownloadTask.
+    bool ensure_libraries(std::string* error);
 
     // Write the log4j2.xml configuration next to the version manifest (1.7+).
     void extract_log4j_config();

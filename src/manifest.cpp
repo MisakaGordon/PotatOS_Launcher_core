@@ -77,6 +77,42 @@ std::string Library::relative_path() const {
     return dir + "/" + name + "/" + version + "/" + file_name();
 }
 
+std::optional<DownloadInfo> Library::raw_download() const {
+    if (native) {
+        auto it = classifiers.find(classifier);
+        if (it != classifiers.end())
+            return it->second;
+        return std::nullopt;
+    }
+    return artifact;
+}
+
+std::string Library::download_path() const {
+    auto info = raw_download();
+    if (info && !info->path.empty())
+        return info->path;
+    return relative_path();
+}
+
+std::string Library::download_url() const {
+    auto info = raw_download();
+    if (info && !info->url.empty())
+        return info->url;
+    std::string base = url.empty() ? "https://libraries.minecraft.net/" : url;
+    if (!base.empty() && base.back() != '/')
+        base += '/';
+    return base + download_path();
+}
+
+std::string Library::download_sha1() const {
+    auto info = raw_download();
+    if (info && !info->sha1.empty())
+        return info->sha1;
+    if (!checksums.empty())
+        return checksums.front();
+    return {};
+}
+
 static bool match_os_arch(const std::string& pattern, const std::string& arch) {
     if (pattern == "x86" && (arch == "x86" || arch == "i386")) return true;
     if (pattern == "x86_64" && (arch == "x86_64" || arch == "amd64")) return true;
@@ -159,14 +195,41 @@ VersionManifest VersionManifest::parse(const std::string& json_str) {
         for (const auto& e : root.at("libraries")) {
             if (!e.contains("name")) continue;
             Library lib = Library::parse(e.at("name").get<std::string>());
+            if (e.contains("url") && e.at("url").is_string())
+                lib.url = e.at("url").get<std::string>();
             if (e.contains("rules"))
                 lib.rules = parse_rules(e.at("rules"));
+            if (e.contains("checksums") && e.at("checksums").is_array())
+                for (const auto& c : e.at("checksums"))
+                    if (c.is_string())
+                        lib.checksums.push_back(c.get<std::string>());
             if (e.contains("extract")) {
                 ExtractRule ex;
                 if (e.at("extract").contains("exclude"))
                     for (const auto& x : e.at("extract").at("exclude"))
                         ex.exclude.push_back(x.get<std::string>());
                 lib.extract = ex;
+            }
+            if (e.contains("downloads") && e.at("downloads").is_object()) {
+                const json& dl = e.at("downloads");
+                auto parse_info = [](const json& j) {
+                    DownloadInfo info;
+                    if (j.contains("path") && j.at("path").is_string())
+                        info.path = j.at("path").get<std::string>();
+                    if (j.contains("url") && j.at("url").is_string())
+                        info.url = j.at("url").get<std::string>();
+                    if (j.contains("sha1") && j.at("sha1").is_string())
+                        info.sha1 = j.at("sha1").get<std::string>();
+                    if (j.contains("size") && j.at("size").is_number())
+                        info.size = j.at("size").get<long long>();
+                    return info;
+                };
+                if (dl.contains("artifact") && dl.at("artifact").is_object())
+                    lib.artifact = parse_info(dl.at("artifact"));
+                if (dl.contains("classifiers") && dl.at("classifiers").is_object())
+                    for (auto it = dl.at("classifiers").begin(); it != dl.at("classifiers").end(); ++it)
+                        if (it.value().is_object())
+                            lib.classifiers[it.key()] = parse_info(it.value());
             }
             if (e.contains("natives")) {
                 for (auto it = e.at("natives").begin(); it != e.at("natives").end(); ++it)

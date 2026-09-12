@@ -115,6 +115,12 @@ void print_help(const char* prog) {
         "  --natives-dir DIR     override the natives directory\n"
         "  --use-custom-natives  skip native library extraction\n"
         "\n"
+        "Downloads (missing libraries are fetched before launch):\n"
+        "  --no-download         do not auto-complete missing library files\n"
+        "  --verify-files        verify SHA-1 of present libraries and refetch\n"
+        "  --download-source SRC mirror (default) | mojang\n"
+        "  --download-server URL mirror root (default: BMCLAPI)\n"
+        "\n"
         "Process:\n"
         "  --env VAR=VAL         set an environment variable (repeatable)\n"
         "  --wrapper CMD         wrap the java command (e.g. gamemoderun)\n"
@@ -243,6 +249,17 @@ CliOptions parse_args(int argc, char** argv) {
             o.launch.natives_dir = next(a);
         } else if (a == "--use-custom-natives") {
             o.launch.use_custom_natives = true;
+        } else if (a == "--no-download") {
+            o.launch.no_download = true;
+        } else if (a == "--verify-files") {
+            o.launch.verify_files = true;
+        } else if (a == "--download-source") {
+            std::string s = next(a);
+            if (s == "mirror") o.launch.download_mirror_first = true;
+            else if (s == "mojang") o.launch.download_mirror_first = false;
+            else throw std::runtime_error("--download-source must be mirror or mojang");
+        } else if (a == "--download-server") {
+            o.launch.download_mirror = next(a);
         } else if (a == "--env") {
             std::string kv = next(a);
             size_t eq = kv.find('=');

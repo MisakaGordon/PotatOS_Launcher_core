@@ -29,6 +29,7 @@ add_executable(potato-launcher
     src/process.cpp
     src/zip.cpp
     src/launcher.cpp
+    src/download.cpp
     src/auth/crypto.cpp
     src/auth/http.cpp
     src/auth/accountstore.cpp
