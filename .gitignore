@@ -21,6 +21,3 @@ authlib-injector-*.jar
 
 # Runtime logs
 logs/
-
-# Detailed local-only documentation (README keeps only the essentials)
-DETAILS.md
