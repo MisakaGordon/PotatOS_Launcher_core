@@ -606,6 +606,32 @@ bool DefaultLauncher::decompress_natives(std::string* error) {
     create_directories(target);
     clean_directory(target);
 
+    // Vanilla's JVM arguments point -Djava.library.path at ${natives_directory}/java,
+    // a subdirectory that nothing ever creates: crash reports then read
+    // "Contents of java.library.path : <not a directory>" and LWJGL has to fall
+    // back to extracting from the classpath. HMCL keeps the same <natives>/java
+    // directory, so create every directory the resolved -Djava.library.path
+    // actually refers to (we stay inside the natives directory on purpose).
+    for (const std::string& arg : substitute_all(manifest_.resolve_jvm_arguments(features()),
+                                                 configurations())) {
+        static const char kLibraryPath[] = "-Djava.library.path=";
+        if (arg.rfind(kLibraryPath, 0) != 0)
+            continue;
+        const std::string abs_target = absolute_path(target);
+        std::string value = arg.substr(sizeof(kLibraryPath) - 1);
+        for (size_t start = 0; start <= value.size();) {
+            size_t sep = value.find(path_separator(), start);
+            std::string dir = value.substr(start, sep == std::string::npos
+                                                      ? std::string::npos
+                                                      : sep - start);
+            if (!dir.empty() && dir.rfind(abs_target, 0) == 0)
+                create_directories(dir);
+            if (sep == std::string::npos)
+                break;
+            start = sep + 1;
+        }
+    }
+
     for (const Library& lib : manifest_.libraries) {
         if (!lib.native || !lib.applies(features()))
             continue;

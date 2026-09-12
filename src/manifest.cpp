@@ -173,6 +173,47 @@ static std::vector<std::string> parse_value(const json& v) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// HMCL NativePatcher parity.
+//
+// Mojang's version.json only ships x86-64 Linux natives for LWJGL, so on an
+// aarch64 host the game starts with an x86-64 natives jar on the classpath and
+// LWJGL bails out with
+//     [LWJGL] Platform/architecture mismatch detected for module: org.lwjgl
+//     Platform available on classpath: linux/x64
+//     java.lang.UnsatisfiedLinkError: Failed to locate library: liblwjgl.so
+// HMCL fixes this in NativePatcher.patchNative, logging
+//     Replace org.lwjgl:lwjgl-opengl:3.4.1:natives-linux with
+//             org.lwjgl:lwjgl-opengl:3.4.1:natives-linux-arm64
+// We rewrite the exact same set (the org.lwjgl natives) here. The artifact URL
+// stays on libraries.minecraft.net because BMCLAPI's /libraries route mirrors it
+// to the real arm64 jar (Mojang's own host answers 404 for the arm64 artifact);
+// the x86-64 sha-1 is dropped since it does not describe the arm64 file.
+// ---------------------------------------------------------------------------
+static void patch_org_lwjgl_natives(Library& lib) {
+    const std::string base = os_name();          // e.g. "linux"
+    const std::string plat = native_platform();  // e.g. "linux-arm64"
+    if (plat != base + "-arm64") return;         // only swap x86-64 -> arm64
+    if (lib.group != "org.lwjgl") return;        // same library set as HMCL
+    if (lib.classifier != "natives-" + base) return;
+
+    const std::string from = "-natives-" + base + ".jar";
+    const std::string to = "-natives-" + plat + ".jar";
+    lib.classifier = "natives-" + plat;
+
+    auto rewrite = [&](DownloadInfo& info) {
+        for (std::string* s : {&info.path, &info.url}) {
+            size_t pos = s->find(from);
+            if (pos != std::string::npos)
+                s->replace(pos, from.size(), to);
+        }
+        info.sha1.clear(); // unknown for the arm64 artifact
+        info.size = 0;
+    };
+    if (lib.artifact) rewrite(*lib.artifact);
+    for (auto& kv : lib.classifiers) rewrite(kv.second);
+}
+
 VersionManifest VersionManifest::parse(const std::string& json_str) {
     VersionManifest m;
     json root = json::parse(json_str);
@@ -241,6 +282,7 @@ VersionManifest VersionManifest::parse(const std::string& json_str) {
                 if (n != lib.natives.end())
                     lib.classifier = n->second;
             }
+            patch_org_lwjgl_natives(lib);
             m.libraries.push_back(std::move(lib));
         }
     }
