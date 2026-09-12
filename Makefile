@@ -8,6 +8,7 @@ TARGET    = potato-launcher
 
 SRCS = src/main.cpp src/platform.cpp src/manifest.cpp src/command.cpp \
        src/process.cpp src/zip.cpp src/launcher.cpp src/download.cpp \
+       src/config.cpp \
        src/auth/crypto.cpp src/auth/http.cpp src/auth/accountstore.cpp \
        src/auth/yggdrasil.cpp src/auth/offline.cpp src/auth/authserver.cpp
 MINIZ_SRCS = vendor/miniz/miniz.c vendor/miniz/miniz_tdef.c \

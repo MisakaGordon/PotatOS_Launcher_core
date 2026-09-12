@@ -7,14 +7,19 @@
  */
 #include "download.h"
 #include "auth/crypto.h"
+#include "auth/http.h"
 #include "platform.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
+#include <iostream>
 #include <utility>
 
 namespace pl {
 
 const char* const kDefaultMirrorRoot = "https://bmclapi2.bangbang93.com";
+const char* const kAuthlibInjectorLatest = "https://authlib-injector.yushi.moe/artifact/latest.json";
 
 std::string mirror_url(const std::string& url, const std::string& mirror_root) {
     if (url.empty() || mirror_root.empty())
@@ -28,6 +33,7 @@ std::string mirror_url(const std::string& url, const std::string& mirror_root) {
         {"https://maven.neoforged.net/releases/", "/maven/"},
         {"https://files.minecraftforge.net/maven", "/maven"},
         {"https://maven.minecraftforge.net", "/maven"},
+        {"https://authlib-injector.yushi.moe", "/mirrors/authlib-injector"},
         {"https://launchermeta.mojang.com", ""},
         {"https://piston-meta.mojang.com", ""},
         {"https://piston-data.mojang.com", ""},
@@ -53,31 +59,44 @@ std::string mirror_url(const std::string& url, const std::string& mirror_root) {
     return url;
 }
 
-bool sha1_matches(const std::string& path, const std::string& sha1) {
-    if (sha1.empty())
-        return true;
-    auto data = read_small_file(path);
-    if (!data)
+static bool hex_equal_ci(const std::string& a, const std::string& b) {
+    if (a.size() != b.size())
         return false;
-    std::string raw = sha1_raw(*data);
-    std::string hex = bytes_to_hex(reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
-    if (hex.size() != sha1.size())
-        return false;
-    for (size_t i = 0; i < hex.size(); ++i) {
-        char a = hex[i], b = sha1[i];
-        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
-        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
-        if (a != b)
+    for (size_t i = 0; i < a.size(); ++i) {
+        char x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
+        if (x != y)
             return false;
     }
     return true;
 }
 
+static bool hash_matches(const std::string& path, const std::string& hex, HashKind kind) {
+    if (hex.empty())
+        return true;
+    auto data = read_small_file(path);
+    if (!data)
+        return false;
+    std::string raw = kind == HashKind::Sha256 ? sha256_raw(*data) : sha1_raw(*data);
+    std::string actual = bytes_to_hex(reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
+    return hex_equal_ci(actual, hex);
+}
+
+bool sha1_matches(const std::string& path, const std::string& hex) {
+    return hash_matches(path, hex, HashKind::Sha1);
+}
+
+bool sha256_matches(const std::string& path, const std::string& hex) {
+    return hash_matches(path, hex, HashKind::Sha256);
+}
+
 bool download_file(const std::vector<std::string>& urls,
                    const std::string& dest,
-                   const std::string& sha1,
+                   const std::string& hash,
                    const std::string& proxy,
-                   std::string* error) {
+                   std::string* error,
+                   HashKind kind) {
     if (urls.empty()) {
         if (error) *error = "no download url for " + dest;
         return false;
@@ -123,7 +142,7 @@ bool download_file(const std::vector<std::string>& urls,
             std::remove(tmp.c_str());
             continue;
         }
-        if (!sha1_matches(tmp, sha1)) {
+        if (!hash_matches(tmp, hash, kind)) {
             last_error = "checksum mismatch: " + url;
             std::remove(tmp.c_str());
             continue;
@@ -139,6 +158,67 @@ bool download_file(const std::vector<std::string>& urls,
     delete_file(tmp);
     if (error) *error = last_error.empty() ? ("no usable download url for " + dest) : last_error;
     return false;
+}
+
+bool download_authlib_injector(const std::string& dest,
+                               bool mirror_first,
+                               const std::string& mirror_root,
+                               const std::string& proxy,
+                               std::string* error) {
+    std::string official = kAuthlibInjectorLatest;
+    std::string mirrored = mirror_url(official, mirror_root);
+
+    std::vector<std::string> meta_urls;
+    if (mirror_first) {
+        if (mirrored != official) meta_urls.push_back(mirrored);
+        meta_urls.push_back(official);
+    } else {
+        meta_urls.push_back(official);
+        if (mirrored != official) meta_urls.push_back(mirrored);
+    }
+
+    std::string download_url;
+    std::string sha256;
+    std::string version;
+    std::string last_error;
+    for (const std::string& url : meta_urls) {
+        HttpResponse resp = http_request(HttpMethod::Get, url);
+        if (!resp.ok || resp.status < 200 || resp.status >= 300) {
+            last_error = "cannot fetch authlib-injector metadata: " + url;
+            continue;
+        }
+        nlohmann::json meta = nlohmann::json::parse(resp.body, nullptr, false);
+        if (meta.is_discarded() || !meta.is_object()) {
+            last_error = "invalid authlib-injector metadata from " + url;
+            continue;
+        }
+        download_url = meta.value("download_url", std::string());
+        version = meta.value("version", std::string());
+        if (meta.contains("checksums") && meta.at("checksums").is_object())
+            sha256 = meta.at("checksums").value("sha256", std::string());
+        if (!download_url.empty())
+            break;
+    }
+
+    if (download_url.empty()) {
+        if (error) *error = last_error.empty() ? "no authlib-injector download url" : last_error;
+        return false;
+    }
+
+    std::string mirrored_dl = mirror_url(download_url, mirror_root);
+    std::vector<std::string> urls;
+    if (mirror_first) {
+        if (mirrored_dl != download_url) urls.push_back(mirrored_dl);
+        urls.push_back(download_url);
+    } else {
+        urls.push_back(download_url);
+        if (mirrored_dl != download_url) urls.push_back(mirrored_dl);
+    }
+
+    std::cerr << "[download] authlib-injector"
+              << (version.empty() ? "" : " " + version)
+              << " -> " << dest << "\n";
+    return download_file(urls, dest, sha256, proxy, error, HashKind::Sha256);
 }
 
 } // namespace pl

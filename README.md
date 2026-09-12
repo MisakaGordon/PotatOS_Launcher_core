@@ -47,13 +47,18 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 
 ### 离线 + 自定义皮肤
 
-需要下载 [authlib-injector](https://authlib-injector.yushi.moe/)：
+authlib-injector 会在缺失时自动下载（默认镜像优先，官方源
+[authlib-injector.yushi.moe](https://authlib-injector.yushi.moe/)，镜像
+`https://bmclapi2.bangbang93.com/mirrors/authlib-injector`），无需手动准备：
 
 ```sh
 ./potato-launcher --game-dir ~/.minecraft --version 1.20.4 \
     --login offline --username Player --skin skin.png --skin-model slim \
-    --authlib-injector ~/authlib-injector.jar --max-mem 2048
+    --max-mem 2048
 ```
+
+默认下载到 `<game-dir>/authlib-injector.jar`；也可用 `--authlib-injector PATH`
+指定其它位置（缺失时同样会下载到该路径）。
 
 启动器会在本地起一个 yggdrasil 服务器，通过 `-javaagent` 注入 authlib-injector，
 把离线玩家皮肤签名后提供给游戏。
@@ -67,6 +72,54 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
     --username Player --uuid 069a79f4-44e9-4726-a5be-fca90e38aaf5 \
     --access-token your-token --user-type mojang --max-mem 4096
 ```
+
+## 配置文件
+
+除了手打参数，也可以把参数写进 JSON。参数按优先级从低到高叠加：
+
+```
+内置默认 < 全局配置 < 实例配置 < --config 文件 < 命令行参数
+```
+
+命令行里显式给出的参数始终覆盖 JSON 中的同名项。
+
+| 层 | 路径 | 说明 |
+|----|------|------|
+| 全局 | `$XDG_CONFIG_HOME/potato-launcher/config.json`（未设置则 `~/.config/potato-launcher/config.json`） | 适用于大部分实例的通用参数 |
+| 实例 | `<game-dir>/versions/<id>/potato.json` | 某个实例的特殊参数（模板） |
+| 指定 | `--config FILE` | 手动指定，可重复，按顺序叠加 |
+
+```jsonc
+{
+  "gameDir": "~/.minecraft",
+  "version": "1.20.4",
+  "launch": {
+    "java": "java",
+    "maxMemory": 4096,
+    "minMemory": 1024,
+    "width": 1280, "height": 720,
+    "priority": "normal",
+    "downloadSource": "mirror",
+    "javaArgs": ["-Dfoo=bar"],
+    "env": { "MESA_LOADER_DRIVER_OVERRIDE": "iris" }
+  },
+  "auth": {
+    "login": "offline",
+    "username": "Player",
+    "account": "",
+    "authServer": "https://authserver.mojang.com"
+  },
+  "skin": { "file": "", "model": "wide", "authlibInjector": "" },
+  "proxy": { "host": "", "port": 0, "username": "" },
+  "mode": { "launchScript": "", "printCommand": false }
+}
+```
+
+- 生成模板：`--init-config [PATH]` 写出包含全部键的默认配置（默认写到全局路径，已存在则不覆盖）。
+- 关闭自动加载：`--no-config` 忽略全局与实例配置（显式 `--config` 仍然生效）。
+- 数组（如 `javaArgs`/`gameArgs`）按整段替换；`env` 为对象，逐键合并。
+- 出于安全考虑，密码、access token、proxy 密码等敏感项不会写入也不会从 JSON 读取，
+  仍通过 `--password` / `--access-token` / `--proxy-pass` 或 `potato-accounts.json` 提供。
 
 ## 软件参数说明
 
@@ -98,9 +151,9 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 
 | 参数 | 说明 |
 |------|------|
-| `--skin FILE` | 要提供的 png 皮肤（需要 `--authlib-injector`） |
+| `--skin FILE` | 要提供的 png 皮肤 |
 | `--skin-model MODEL` | 皮肤模型：`wide`（默认）或 `slim` |
-| `--authlib-injector PATH` | `authlib-injector.jar` 的路径 |
+| `--authlib-injector PATH` | `authlib-injector.jar` 路径（默认 `<game-dir>/authlib-injector.jar`，缺失时自动下载） |
 
 ### 内存与 JVM
 
@@ -155,6 +208,10 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 > 补全发生在 `--launch-script` 与真正启动之前；`--print-command` 不触发下载。
 > 下载同样使用系统 `curl`，并遵循 `--proxy-*` 代理设置。
 
+使用离线皮肤时，缺失的 `authlib-injector.jar` 也会按同样的镜像/官方源策略自动下载
+（校验 SHA-256），存放于 `--authlib-injector` 指定路径或 `<game-dir>/authlib-injector.jar`；
+`--no-download` 会一并禁止该下载。
+
 ### 进程与运行环境
 
 | 参数 | 说明 |
@@ -178,6 +235,14 @@ UUID 由玩家名按 Java 规则推导（`OfflinePlayer:` + 名字的 name-based
 | `--launch-script PATH` | 生成可执行的 bash 启动脚本并退出（同样会先补全库、解压原生库） |
 | `--print-command` | 打印组装好的命令行并退出（不下载、不解压） |
 | `--help` | 显示帮助 |
+
+### 配置
+
+| 参数 | 说明 |
+|------|------|
+| `--config FILE` | 从 JSON 文件加载参数（可重复，按顺序叠加） |
+| `--no-config` | 忽略全局与实例 JSON（显式 `--config` 仍生效） |
+| `--init-config [PATH]` | 写出默认配置并退出（默认写到全局路径） |
 
 > 系统依赖：HTTP 与库下载使用系统 `curl`（可用 `POTATO_CURL` 指定），离线皮肤签名使用
 > `openssl`（可用 `POTATO_OPENSSL` 指定），游戏需已安装对应 Java。
